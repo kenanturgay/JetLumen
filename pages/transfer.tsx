@@ -1,102 +1,139 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/router'
 import { signXDR, getFreighterAddress } from '../lib/freighter'
-import StellarSdk from 'stellar-sdk'
-import { callRecordTransfer } from '../lib/soroban'
+import * as soroban from '../lib/soroban'
 
 type State = {
   total: string
   lastRecipient: string
 }
 
+type Mode = 'transfer' | 'timelock' | 'swap'
+
 export default function Transfer() {
   const router = useRouter()
   const [publicKey, setPublicKey] = useState<string | null>(null)
+  const [mode, setMode] = useState<Mode>('transfer')
+  
+  // Transfer state
   const [amount, setAmount] = useState('0.0001')
   const [recipient, setRecipient] = useState('GB...')
+  
+  // TimeLock state
+  const [unlockTime, setUnlockTime] = useState<string>(
+    new Date(Date.now() + 3600000).toISOString().slice(0, 16)
+  )
+  
+  // Swap state
+  const [swapAmountFrom, setSwapAmountFrom] = useState('0.0001')
+  const [swapAmountTo, setSwapAmountTo] = useState('0.0001')
+  const [counterparty, setCounterparty] = useState('GB...')
+  const [swapExpiration, setSwapExpiration] = useState<string>(
+    new Date(Date.now() + 3600000).toISOString().slice(0, 16)
+  )
+  
+  // UI state
   const [state, setState] = useState<State>({ total: '0', lastRecipient: '' })
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
   useEffect(() => {
-    const key = localStorage.getItem('jetlumen_publicKey')
-    if (!key) router.push('/')
-    else setPublicKey(key)
-    fetchState()
-  }, [])
+    try {
+      const key = localStorage.getItem('jetlumen_publicKey')
+      if (!key) {
+        router?.push('/')
+        return
+      }
+      setPublicKey(key)
+      fetchState()
+    } catch (error) {
+      console.error('Failed to initialize:', error)
+      setError('Failed to initialize session')
+    }
+  }, [router])
 
   async function fetchState() {
-    const res = await fetch('/api/state')
-    const json = await res.json()
-    setState({ total: json.total, lastRecipient: json.lastRecipient })
+    try {
+      const res = await fetch('/api/state')
+      if (!res.ok) throw new Error('Failed to fetch state')
+      const json = await res.json()
+      setState({ total: json.total, lastRecipient: json.lastRecipient })
+    } catch (error) {
+      console.error('Failed to fetch state:', error)
+      setError('Failed to fetch state')
+    }
   }
 
-  async function send() {
+  async function handleContractCall() {
+    await soroban.initialize()
+    
+    // Handle real contract calls
+    switch (mode) {
+      case 'transfer':
+        return soroban.recordTransfer(recipient, amount)
+      case 'timelock':
+        return soroban.createTimeLock(amount, new Date(unlockTime).getTime())
+      case 'swap':
+        return soroban.createSwap(
+          counterparty,
+          swapAmountFrom,
+          swapAmountTo,
+          new Date(swapExpiration).getTime()
+        )
+      default:
+        throw new Error('Invalid operation mode')
+    }
+  }
+
+  async function handleAction() {
     setLoading(true)
     setError(null)
     setSuccess(null)
     
     try {
-      // Build a dummy transaction XDR (we don't transfer XLM)
-      // Try to get network details from Freighter if available, otherwise fall back to TESTNET
-      let networkPassphrase = StellarSdk.Networks.TESTNET
-      try {
-        const freighter = (await import('@stellar/freighter-api')) as any
-        const details = await (freighter.getNetworkDetails?.() ?? null)
-        if (details?.networkPassphrase) networkPassphrase = details.networkPassphrase
-      } catch (e) {
-        console.debug('Could not load freighter network details, defaulting to TESTNET', e)
+      if (!publicKey) throw new Error('Not connected')
+
+      const result = await handleContractCall()
+      console.log('Contract call result:', result)
+      
+      switch (mode) {
+        case 'transfer':
+          setSuccess('Transfer completed successfully')
+          break
+        case 'timelock':
+          setSuccess('Time lock created successfully')
+          break
+        case 'swap':
+          setSuccess(`Swap created successfully. ID: ${result.hash || 'Unknown'}`)
+          break
       }
 
-      // Create a very small dummy operation: manage data
-      const source = publicKey!
-      const account = new StellarSdk.Account(source, '-1')
-      const tx = new StellarSdk.TransactionBuilder(account, { fee: '100', networkPassphrase })
-        .addOperation(StellarSdk.Operation.manageData({ name: 'jetlumen', value: `${recipient}:${amount}` }))
-        .setTimeout(30)
-        .build()
-
-  // sign with Freighter using helper
-  const signed = await signXDR(tx.toXDR(), source)
-  console.log('Signed tx', signed)
-
-      // If environment variables provided, attempt to call the real contract
-      const contractId = process.env.NEXT_PUBLIC_CONTRACT_ID
-      if (contractId && process.env.NEXT_PUBLIC_SOROBAN_RPC) {
-        // Attempt real contract call (placeholder helper)
-        const result = await callRecordTransfer(contractId, source, recipient, amount)
-        console.log('Contract call result', result)
-        // Optionally you may still refresh state from a contract-read endpoint
-      } else {
-        // Fallback: Simulate calling the contract by hitting our API which updates JSON state
-        const resp = await fetch('/api/transfer', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sender: source, recipient, amount })
-        })
-        const result = await resp.json()
-        console.log('Transfer result', result)
-        await fetchState()
-      }
-    } catch (e) {
-      console.error('Send failed', e)
-      setError((e as Error).message)
+      await fetchState()
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred'
+      console.error('Operation failed:', error)
+      setError(errorMessage)
     } finally {
       setLoading(false)
     }
   }
 
   function disconnect() {
-    localStorage.removeItem('jetlumen_publicKey')
-    router.push('/')
+    try {
+      localStorage.removeItem('jetlumen_publicKey')
+      router?.push('/')
+    } catch (error) {
+      console.error('Failed to disconnect:', error)
+      setError('Failed to disconnect')
+    }
   }
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-900 to-black p-4">
       <div className="p-8 bg-white/10 backdrop-blur-lg rounded-xl shadow-2xl w-full max-w-lg">
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-white">Send JetLumen</h2>
+          <h2 className="text-2xl font-bold text-white">JetLumen</h2>
           <button 
             onClick={disconnect}
             className="px-3 py-1 text-sm bg-red-500/20 text-red-300 rounded-lg hover:bg-red-500/30 transition-colors"
@@ -110,33 +147,152 @@ export default function Transfer() {
           <div className="font-mono text-white text-sm truncate">{publicKey}</div>
         </div>
 
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-blue-200 mb-2">Amount (XLM)</label>
-            <input 
-              className="w-full p-3 bg-white/5 border border-white/10 rounded-lg text-white 
-                       focus:ring-2 focus:ring-blue-500 focus:border-transparent
-                       placeholder-white/30 outline-none transition-all"
-              value={amount} 
-              onChange={e => setAmount(e.target.value)}
-              placeholder="0.0001"
-            />
-          </div>
+        <div className="mb-6 flex gap-2">
+          <button
+            onClick={() => setMode('transfer')}
+            className={`flex-1 py-2 px-3 rounded-lg transition-colors ${
+              mode === 'transfer' 
+                ? 'bg-blue-600 text-white' 
+                : 'bg-white/5 text-blue-200 hover:bg-white/10'
+            }`}
+          >
+            Transfer
+          </button>
+          <button
+            onClick={() => setMode('timelock')}
+            className={`flex-1 py-2 px-3 rounded-lg transition-colors ${
+              mode === 'timelock'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white/5 text-blue-200 hover:bg-white/10'
+            }`}
+          >
+            Time Lock
+          </button>
+          <button
+            onClick={() => setMode('swap')}
+            className={`flex-1 py-2 px-3 rounded-lg transition-colors ${
+              mode === 'swap'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white/5 text-blue-200 hover:bg-white/10'
+            }`}
+          >
+            Swap
+          </button>
+        </div>
 
-          <div>
-            <label className="block text-sm font-medium text-blue-200 mb-2">Recipient Address</label>
-            <input 
-              className="w-full p-3 bg-white/5 border border-white/10 rounded-lg text-white 
-                       focus:ring-2 focus:ring-blue-500 focus:border-transparent
-                       placeholder-white/30 outline-none transition-all font-mono"
-              value={recipient} 
-              onChange={e => setRecipient(e.target.value)}
-              placeholder="GABCD..."
-            />
-          </div>
+        <div className="space-y-4">
+          {mode === 'transfer' && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-blue-200 mb-2">Amount (XLM)</label>
+                <input 
+                  className="w-full p-3 bg-white/5 border border-white/10 rounded-lg text-white 
+                           focus:ring-2 focus:ring-blue-500 focus:border-transparent
+                           placeholder-white/30 outline-none transition-all"
+                  value={amount} 
+                  onChange={e => setAmount(e.target.value)}
+                  placeholder="0.0001"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-blue-200 mb-2">Recipient Address</label>
+                <input 
+                  className="w-full p-3 bg-white/5 border border-white/10 rounded-lg text-white 
+                           focus:ring-2 focus:ring-blue-500 focus:border-transparent
+                           placeholder-white/30 outline-none transition-all font-mono"
+                  value={recipient} 
+                  onChange={e => setRecipient(e.target.value)}
+                  placeholder="GABCD..."
+                />
+              </div>
+            </>
+          )}
+
+          {mode === 'timelock' && (
+            <>
+              <div>
+                <label className="block text-sm font-medium text-blue-200 mb-2">Amount to Lock (XLM)</label>
+                <input 
+                  className="w-full p-3 bg-white/5 border border-white/10 rounded-lg text-white 
+                           focus:ring-2 focus:ring-blue-500 focus:border-transparent
+                           placeholder-white/30 outline-none transition-all"
+                  value={amount} 
+                  onChange={e => setAmount(e.target.value)}
+                  placeholder="0.0001"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-blue-200 mb-2">Unlock Time</label>
+                <input 
+                  type="datetime-local"
+                  className="w-full p-3 bg-white/5 border border-white/10 rounded-lg text-white 
+                           focus:ring-2 focus:ring-blue-500 focus:border-transparent
+                           placeholder-white/30 outline-none transition-all"
+                  value={unlockTime}
+                  onChange={e => setUnlockTime(e.target.value)}
+                />
+              </div>
+            </>
+          )}
+
+          {mode === 'swap' && (
+            <>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-blue-200 mb-2">You Send (XLM)</label>
+                  <input 
+                    className="w-full p-3 bg-white/5 border border-white/10 rounded-lg text-white 
+                             focus:ring-2 focus:ring-blue-500 focus:border-transparent
+                             placeholder-white/30 outline-none transition-all"
+                    value={swapAmountFrom} 
+                    onChange={e => setSwapAmountFrom(e.target.value)}
+                    placeholder="0.0001"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-blue-200 mb-2">You Receive (XLM)</label>
+                  <input 
+                    className="w-full p-3 bg-white/5 border border-white/10 rounded-lg text-white 
+                             focus:ring-2 focus:ring-blue-500 focus:border-transparent
+                             placeholder-white/30 outline-none transition-all"
+                    value={swapAmountTo} 
+                    onChange={e => setSwapAmountTo(e.target.value)}
+                    placeholder="0.0001"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-blue-200 mb-2">Counterparty Address</label>
+                <input 
+                  className="w-full p-3 bg-white/5 border border-white/10 rounded-lg text-white 
+                           focus:ring-2 focus:ring-blue-500 focus:border-transparent
+                           placeholder-white/30 outline-none transition-all font-mono"
+                  value={counterparty} 
+                  onChange={e => setCounterparty(e.target.value)}
+                  placeholder="GABCD..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-blue-200 mb-2">Expiration Time</label>
+                <input 
+                  type="datetime-local"
+                  className="w-full p-3 bg-white/5 border border-white/10 rounded-lg text-white 
+                           focus:ring-2 focus:ring-blue-500 focus:border-transparent
+                           placeholder-white/30 outline-none transition-all"
+                  value={swapExpiration}
+                  onChange={e => setSwapExpiration(e.target.value)}
+                />
+              </div>
+            </>
+          )}
 
           <button
-            onClick={send}
+            onClick={handleAction}
             disabled={loading}
             className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 
                      disabled:opacity-50 transition-all duration-200 transform 
@@ -149,10 +305,14 @@ export default function Transfer() {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                 </svg>
-                <span>Sending...</span>
+                <span>Processing...</span>
               </div>
             ) : (
-              'Send JetLumen'
+              {
+                'transfer': 'Send JetLumen',
+                'timelock': 'Create Time Lock',
+                'swap': 'Create Swap'
+              }[mode]
             )}
           </button>
 
