@@ -1,1 +1,1 @@
-self.__REACT_LOADABLE_MANIFEST="{\"transfer.tsx -> @stellar/freighter-api\":{\"id\":\"transfer.tsx -> @stellar/freighter-api\",\"files\":[]}}"
+self.__REACT_LOADABLE_MANIFEST="{\"..\\\\lib\\\\freighter.ts -> @stellar/freighter-api\":{\"id\":\"..\\\\lib\\\\freighter.ts -> @stellar/freighter-api\",\"files\":[\"static/chunks/node_modules_stellar_freighter-api_build_index_min_js.js\"]},\"transfer.tsx -> @stellar/freighter-api\":{\"id\":\"transfer.tsx -> @stellar/freighter-api\",\"files\":[]}}"
