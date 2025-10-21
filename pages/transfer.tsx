@@ -39,18 +39,36 @@ export default function Transfer() {
   const [success, setSuccess] = useState<string | null>(null)
 
   useEffect(() => {
-    try {
-      const key = localStorage.getItem('jetlumen_publicKey')
-      if (!key) {
-        router?.push('/')
-        return
+    async function init() {
+      try {
+        // Check if Freighter is installed and available
+        const isAvailable = await import('@stellar/freighter-api').then(mod => mod.isConnected())
+        if (!isAvailable) {
+          setError('Please install Freighter wallet extension')
+          return
+        }
+
+        // Try to get the stored key or initialize a new connection
+        let key = localStorage.getItem('jetlumen_publicKey')
+        if (!key) {
+          const newKey = await soroban.initialize()
+          if (!newKey) {
+            router?.push('/')
+            return
+          }
+          localStorage.setItem('jetlumen_publicKey', newKey)
+          key = newKey
+        }
+
+        setPublicKey(key)
+        await fetchState()
+      } catch (error) {
+        console.error('Failed to initialize:', error)
+        setError('Failed to initialize Freighter connection. Please make sure Freighter is unlocked.')
       }
-      setPublicKey(key)
-      fetchState()
-    } catch (error) {
-      console.error('Failed to initialize:', error)
-      setError('Failed to initialize session')
     }
+    
+    init()
   }, [router])
 
   async function fetchState() {
