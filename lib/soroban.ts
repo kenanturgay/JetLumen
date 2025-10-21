@@ -22,11 +22,45 @@ let currentPublicKey: string | null = null;
 
 export async function initialize(): Promise<string> {
   try {
-    currentPublicKey = await getPublicKey();
-    if (!currentPublicKey) throw new Error("Freighter not connected");
-    return currentPublicKey;
+    // First, check if Freighter is available in the browser
+    if (typeof window === 'undefined') {
+      throw new Error("Freighter is not available - browser environment required");
+    }
+
+    // Try to get the public key
+    let publicKey: string | null = null;
+    
+    // First try getting from existing connection
+    if (currentPublicKey) {
+      try {
+        const storedKey = await getPublicKey();
+        if (storedKey && storedKey === currentPublicKey) {
+          return currentPublicKey;
+        }
+      } catch (e) {
+        // Ignore error and try new connection
+      }
+    }
+
+    // Try to get a new public key
+    try {
+      publicKey = await getPublicKey();
+    } catch (e) {
+      throw new Error("Please unlock Freighter and try again");
+    }
+
+    if (!publicKey) {
+      throw new Error("No wallet connected. Please connect Freighter wallet.");
+    }
+
+    // Update the current key and return
+    currentPublicKey = publicKey;
+    return publicKey;
+
   } catch (error) {
-    throw new Error("Failed to initialize Freighter connection");
+    console.error("Freighter initialization error:", error);
+    const message = error instanceof Error ? error.message : "Failed to initialize wallet connection";
+    throw new Error(message);
   }
 }
 
@@ -55,10 +89,11 @@ async function createTransactionBuilder(source: string) {
 }
 
 export async function recordTransfer(recipient: string, amount: string) {
-  if (!currentPublicKey) await initialize();
-  
   try {
-    const builder = await createTransactionBuilder(currentPublicKey!);
+    // Get the current public key if not already set
+    const publicKey = currentPublicKey ?? await initialize();
+    
+    const builder = await createTransactionBuilder(publicKey);
     const transaction = builder
       .addOperation(Operation.payment({
         destination: recipient,
@@ -76,15 +111,16 @@ export async function recordTransfer(recipient: string, amount: string) {
 }
 
 export async function createTimeLock(amount: string, unlockTime: number) {
-  if (!currentPublicKey) await initialize();
-
   try {
-    const builder = await createTransactionBuilder(currentPublicKey!);
+    // Get the current public key if not already set
+    const publicKey = currentPublicKey ?? await initialize();
+
+    const builder = await createTransactionBuilder(publicKey);
     const transaction = builder
       .addOperation(Operation.setOptions({
         homeDomain: "jetlumen",
         signer: {
-          ed25519PublicKey: currentPublicKey!,
+          ed25519PublicKey: publicKey,
           weight: 1
         }
       }))
@@ -104,10 +140,11 @@ export async function createSwap(
   amountTo: string,
   expiration: number
 ): Promise<{ hash: string }> {
-  if (!currentPublicKey) await initialize();
-
   try {
-    const builder = await createTransactionBuilder(currentPublicKey!);
+    // Get the current public key if not already set
+    const publicKey = currentPublicKey ?? await initialize();
+
+    const builder = await createTransactionBuilder(publicKey);
     const transaction = builder
       .addOperation(Operation.setOptions({
         homeDomain: "jetlumen:swap",

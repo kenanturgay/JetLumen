@@ -84,9 +84,10 @@ export default function Transfer() {
   }
 
   async function handleContractCall() {
-    await soroban.initialize()
+    if (!publicKey) {
+      throw new Error('Wallet not connected')
+    }
     
-    // Handle real contract calls
     switch (mode) {
       case 'transfer':
         return soroban.recordTransfer(recipient, amount)
